@@ -1,0 +1,39 @@
+name: ダウンロード統計の記録
+
+# 毎日 0:05 JST にリリース資産のダウンロード数を stats/downloads.json に追記する。
+# ホームページの統計ページ(https://notecode.click/stats.html)がこのファイルを読む。
+
+on:
+  schedule:
+    - cron: "5 15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ダウンロード数を記録してコミット
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p stats
+          [ -f stats/downloads.json ] || echo "[]" > stats/downloads.json
+          TODAY=$(date -u -d '+9 hours' +%F)
+          SNAP=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate | jq -c --arg date "$TODAY" '{
+            date: $date,
+            win: ([.[].assets[] | select(.name | endswith(".exe")) | .download_count] | add // 0),
+            mac: ([.[].assets[] | select((.name | endswith(".dmg")) or (.name | endswith("-mac.zip"))) | .download_count] | add // 0),
+            checks: ([.[].assets[] | select(.name == "latest.yml") | .download_count] | add // 0)
+          }')
+          # 同日再実行は上書き(1 日 1 レコード)
+          jq -c --argjson snap "$SNAP" 'map(select(.date != $snap.date)) + [$snap]' stats/downloads.json > tmp.json
+          mv tmp.json stats/downloads.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stats/downloads.json
+          git commit -m "統計: ${TODAY}" || exit 0
+          git push
